@@ -15,17 +15,15 @@ DESCRIPTION = 'Keithley IV measurements'
 URL = 'https://github.com/jablevin/kiv'
 AUTHOR = 'Jacob Blevins'
 REQUIRES_PYTHON = '>=3.6.0'
-VERSION = '0.0.1'
+VERSION = '0.0.6'
 
 
 REQUIRED = ['pint',
             'numpy',
-            'sys',
             'matplotlib',
             'iapws',
             'scipy',
             'pyvisa',
-            'time',
 ]
 
 
@@ -85,7 +83,7 @@ setup(
     author=AUTHOR,
     python_requires=REQUIRES_PYTHON,
     url=URL,
-    packages=find_packages(exclude=('tests',)),+
+    packages=find_packages(exclude=('tests',)),
 
     install_requires=REQUIRED,
 
