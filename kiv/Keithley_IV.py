@@ -32,13 +32,12 @@ class Keithley6487_IV(object):
         ID:       The local address of the Keithley 6487
                   Default='GPIB0::22::INSTR'
     """
-    def __init__(self, start, stop, stepsize=0.1, delay=2, repeat=1, sleep=30, ID='GPIB0::22::INSTR'):
+    def __init__(self, start, stop, stepsize=0.1, delay=5, nplc=1, ID='GPIB0::22::INSTR'):
         self.start = start
         self.stop = stop
         self.stepsize = stepsize
         self.delay = delay
-        self.repeat = 1
-        self.sleep = sleep
+        self.nplc = nplc
         self.nsteps = int(abs((stop - start) / stepsize) + 1)
 
         self.connect_keithley(ID)
@@ -59,13 +58,14 @@ class Keithley6487_IV(object):
 
     def timeout(self):
         """ Sets timout so that longer measurements are not cut short """
-        self.keithley.timeout = ((self.nsteps*self.delay)*self.repeat + self.sleep*(self.repeat-1)) * 1000 + 1000
+        self.keithley.timeout = (self.nsteps * (self.delay + self.nplc/50)) * 1000 + 10000
 
 
     def program_sens(self):
         """ Setting parameters in SENSor SCPI commands """
         self.keithley.write(":SENS:FUNC 'CURR:DC' ")
         self.keithley.write(":SENS:CURR:RANG:AUTO ON")
+        self.keithley.write(":SENS:CURR:NPLC ", str(self.nplc))
 
 
     def program_sour(self):
@@ -96,42 +96,25 @@ class Keithley6487_IV(object):
     @property
     def runtime(self):
         """ Provides an estimated runtime of complete measurement cycle """
-        return (self.nsteps*self.delay)*self.repeat + self.sleep*(self.repeat-1)
+        return (self.nsteps * (self.delay + self.nplc/50)) + 5
 
 
     def begin_runs(self):
         """
         Begins the measurement cycle and stores values
         vso: The voltage source list
-        full_curr_list: List of all currents measured in order of measurements
-                        across repeat cycles
-        full_vso_list:  List of all vso that correctly correspond to the order
-                        of the currents in full_curr_list
-        err: Standard errors for each current that correspond to voltages from
-             vso variable list
-        avg_curr: The averaged current at each vso value in vso variable list
-
-        Several of these parameters are only applicable for when repeat is greater
-        than 1. Otherwise the vso and full_vso_list will be the same for example
+        curr: Current list in ohms
         """
-        self.yvalues = {}
-        for i in range(self.repeat):
-            if i != 0:
-                time.sleep(self.sleep)
-            self.keithley.write(":SOUR:VOLT:SWE:INIT")
-            self.result = self.keithley.query(":READ?")
-            self.yvalues[i] = np.array(self.keithley.query_ascii_values(":FETC?"))
-        self.vso = np.array(self.yvalues[0][1::2])
-        self.full_curr_list = (np.array([[self.yvalues[i][::2][j] for i in range(self.repeat)] for j in range(self.nsteps)]).flatten())
-        self.full_vso_list = np.array([[j for i in range(self.repeat)] for j in self.vso]).flatten()
-        ylist = np.split(self.full_curr_list, self.nsteps)
-        self.err = np.std(ylist, axis=1)
-        self.avg_curr = np.mean(ylist, axis=1)
+        self.keithley.write(":SOUR:VOLT:SWE:INIT")
+        self.result = self.keithley.query(":READ?")
+        self.yvalues = np.array(self.keithley.query_ascii_values(":FETC?"))
+        self.curr = np.array(self.yvalues[0::2])
+        self.vso = np.array(self.yvalues[1::2])
 
 
     def calc_resistance(self):
         """ Calculates resistance (in ohms) from slope of linear fit to IV data """
-        self.slope, self.intercept, self.r, self.p, self.std_error = stats.linregress(self.full_vso_list, self.full_curr_list)
+        self.slope, self.intercept, self.r, self.p, self.std_error = stats.linregress(self.vso, self.curr)
         self.resistance = (1 / self.slope)
 
 
@@ -162,10 +145,7 @@ class Keithley6487_IV(object):
 
         matplotlib.rcParams.update({'font.size': 12})
         plt.figure(figsize=(12,8))
-        if self.repeat > 1:
-            plt.errorbar(self.vso, self.avg_curr, yerr=self.err, fmt='o', capsize=5, color='navy')
-        else:
-            plt.scatter(self.vso, self.avg_curr, color='navy')
+        plt.scatter(self.vso, self.curr, color='navy')
         if fit:
             plt.plot(self.vso, self.slope*self.vso + self.intercept, color='darkorange')
         plt.xlabel('Voltage (V)')
@@ -180,7 +160,7 @@ class Keithley6487_IV(object):
 
     def write_csv(self, filename):
         """ Writes data to CSV file """
-        data = np.array((self.vso, self.full_curr_list))
+        data = np.array((self.vso, self.curr)).transpose()
         np.savetxt(filename, data, delimiter=',')
 
 
@@ -216,7 +196,7 @@ class Keithley6517B_IV(object):
         ID:       The local address of the Keithley 6487
                   Default='GPIB0::22::INSTR'
     """
-    def __init__(self, start, stop, stepsize=0.1, delay=2, repeat=1, sleep=30, ID='GPIB0::22::INSTR'):
+    def __init__(self, start, stop, stepsize=0.1, delay=5, nplc=1, temperature=False, ID='GPIB0::22::INSTR'):
         self.start = start
         self.stop = stop
 
@@ -230,9 +210,13 @@ class Keithley6517B_IV(object):
             self.stepsize = -stepsize
 
         self.delay = delay
-        self.repeat = 1
-        self.sleep = sleep
         self.nsteps = int(abs((stop - start) / stepsize) + 1)
+        self.nplc = nplc
+        if temperature:
+            self.data_out = 'READ,VSO,ETEM'
+        else:
+            self.data_out = 'READ,VSO'
+        self.data_count = self.data_count.count(',') + 1
 
         self.connect_keithley(ID)
         self.timeout()
@@ -252,13 +236,14 @@ class Keithley6517B_IV(object):
 
     def timeout(self):
         """ Sets timout so that longer measurements are not cut short """
-        self.keithley.timeout = ((self.nsteps*self.delay)*self.repeat + self.sleep*(self.repeat-1)) * 1000 + 1000
+        self.keithley.timeout = (self.nsteps * (self.delay + self.nplc/50)) * 1000 + 10000
 
 
     def program_sens(self):
         """ Setting parameters in SENSor SCPI commands """
         self.keithley.write(":SENS:FUNC 'CURR:DC' ")
         self.keithley.write(":SENS:CURR:RANG:AUTO ON")
+        self.keithley.write(":SENS:CURR:NPLC ", str(self.nplc))
 
 
     def program_tseq(self):
@@ -274,59 +259,50 @@ class Keithley6517B_IV(object):
     def program_form(self):
         """ Setting parameters in FORMat SCPI commands """
         self.keithley.write(":FORM:DATA ASC")
-        self.keithley.write(":FORM:ELEM READ,VSO")
+        self.keithley.write(":FORM:ELEM ", self.data_out)
 
 
     def program_trig(self):
         """ Setting parameters in TRIGger SCPI commands """
-        self.keithley.write(":TRIG:COUN ", str(self.nsteps))
+        self.keithley.write(":TRIG:COUN ", str(self.nsteps*self.data_count))
 
 
     def program_syst(self):
         """ Setting parameters in SYSTem SCPI commands """
         self.keithley.write("SYST:ZCH OFF")
+        if 'ETEM' in self.data_out:
+            self.keithley.write("SYST:TSC ON")
 
 
     @property
     def runtime(self):
         """ Provides an estimated runtime of complete measurement cycle """
-        return (self.nsteps*self.delay)*self.repeat + self.sleep*(self.repeat-1)
+        return (self.nsteps * (self.delay + self.nplc/50)) + 5
 
 
     def begin_runs(self):
         """
         Begins the measurement cycle and stores values
         vso: The voltage source list
-        full_curr_list: List of all currents measured in order of measurements
-                        across repeat cycles
-        full_vso_list:  List of all vso that correctly correspond to the order
-                        of the currents in full_curr_list
-        err: Standard errors for each current that correspond to voltages from
-             vso variable list
-        avg_curr: The averaged current at each vso value in vso variable list
-
-        Several of these parameters are only applicable for when repeat is greater
-        than 1. Otherwise the vso and full_vso_list will be the same for example
+        curr: Current list in ohms
+        temperature: list of temperatures at each measurement datapoint
         """
-        self.yvalues = {}
-        for i in range(self.repeat):
-            if i != 0:
-                time.sleep(self.sleep)
-            self.keithley.write(":TSEQ:ARM")
-            self.keithley.write("*TRG")
-            time.sleep(int(self.runtime)+5)
-            self.yvalues[i] = np.array(self.keithley.query_ascii_values(":TRACE:DATA?"))
-        self.vso = np.array(self.yvalues[0][1::2])
-        self.full_curr_list = (np.array([[self.yvalues[i][::2][j] for i in range(self.repeat)] for j in range(self.nsteps)]).flatten())
-        self.full_vso_list = np.array([[j for i in range(self.repeat)] for j in self.vso]).flatten()
-        ylist = np.split(self.full_curr_list, self.nsteps)
-        self.err = np.std(ylist, axis=1)
-        self.avg_curr = np.mean(ylist, axis=1)
+        self.keithley.write(":TSEQ:ARM")
+        self.keithley.write("*TRG")
+        time.sleep(int(self.runtime)+5)
+        self.yvalues = np.array(self.keithley.query_ascii_values(":TRACE:DATA?"))
+        if 'ETEM' in self.data_out:
+            self.curr = np.array(self.yvalues[0::3])
+            self.temperature = np.array(self.yvalues[1::3])
+            self.vso = np.array(self.yvalues[2::3])
+        else:
+            self.curr = np.array(self.yvalues[0::2])
+            self.vso = np.array(self.yvalues[1::2])
 
 
     def calc_resistance(self):
         """ Calculates resistance (in ohms) from slope of linear fit to IV data """
-        self.slope, self.intercept, self.r, self.p, self.std_error = stats.linregress(self.full_vso_list, self.full_curr_list)
+        self.slope, self.intercept, self.r, self.p, self.std_error = stats.linregress(self.vso, self.curr)
         self.resistance = (1 / self.slope)
 
 
@@ -357,10 +333,7 @@ class Keithley6517B_IV(object):
 
         matplotlib.rcParams.update({'font.size': 12})
         plt.figure(figsize=(12,8))
-        if self.repeat > 1:
-            plt.errorbar(self.vso, self.avg_curr, yerr=self.err, fmt='o', capsize=5, color='navy')
-        else:
-            plt.scatter(self.vso, self.avg_curr, color='navy')
+        plt.scatter(self.vso, self.curr, color='navy')
         if fit:
             plt.plot(self.vso, self.slope*self.vso + self.intercept, color='darkorange')
         plt.xlabel('Voltage (V)')
@@ -376,10 +349,13 @@ class Keithley6517B_IV(object):
 
     def write_csv(self, filename):
         """ Writes data to CSV file """
-        data = np.array((self.vso, self.full_curr_list))
-        np.savetxt(filename, data, delimiter=',')
-
+        if 'ETEM' in self.data_out:
+            data = np.array((self.vso, self.curr, self.temperature)).transpose()
+            np.savetxt(filename, data, delimiter=',')
+        else:
+            data = np.array((self.vso, self.curr)).transpose()
+            np.savetxt(filename, data, delimiter=',')
 
     def close_keithley(self):
-        """ Call this function to close connection to Keithley 6487  """
+        """ Call this function to close connection to Keithley 6487 """
         self.keithley.close()
